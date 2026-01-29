@@ -6,7 +6,7 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
-// Хранилище: phone → { code, userId }
+// Хранилище сессий: phone → { code, userId }
 const sessions = {};
 
 // CORS
@@ -24,52 +24,55 @@ app.use((req, res, next) => {
   next();
 });
 
-// Отправка SMS на номер телефона
+// Отправка SMS через SMSAero
 app.post('/api/send-sms', async (req, res) => {
   const { phone } = req.body;
 
-  // Валидация формата
   if (!phone || !/^\+?7\d{10}$/.test(phone)) {
     return res.status(400).json({ error: 'Invalid phone. Use +79991234567' });
   }
 
   const cleanPhone = phone.startsWith('+') ? phone.slice(1) : phone; // 79255445330
-
   const code = Math.random().toString().slice(2, 8);
   const userId = uuidv4();
   sessions[cleanPhone] = { code, userId };
 
-  console.log(`[SMS] Sending ${code} to ${cleanTime}`);
+  console.log(`[SMSAero] Sending ${code} to ${cleanPhone}`);
 
   try {
-    // Отправляем БЕЗ sender ID и с нейтральным текстом
-    const response = await axios.get('https://smsc.ru/sys/send.php', {
-      params: {
-        login: process.env.SMSC_LOGIN,
-        psw: process.env.SMSC_PASSWORD,
-        phones: cleanPhone,
-        mes: code, // Только цифры!
-        fmt: 3
+    // Запрос к SMSAero
+    const response = await axios.post(
+      'https://api.smsaero.ru/v2/sms/send',
+      {
+        number: cleanPhone,
+        text: `Ваш код: ${code}`, // можно добавить текст
+        sign: 'SMS Aero'           // имя отправителя (можно менять)
       },
-      timeout: 10000
-    });
+      {
+        auth: {
+          username: process.env.SMSAERO_EMAIL,
+          password: process.env.SMSAERO_API_KEY
+        },
+        timeout: 10000
+      }
+    );
 
     const data = response.data;
-    if (data.error) {
-      console.error('[SMS ERROR]', data);
-      return res.status(500).json({ error: 'SMS failed', details: data.error });
+    if (data.success) {
+      console.log('[SMSAero SUCCESS]');
+      res.json({ ok: true });
+    } else {
+      console.error('[SMSAero ERROR]', data);
+      res.status(500).json({ error: 'SMS failed', details: data.message });
     }
 
-    console.log('[SMS SUCCESS]');
-    res.json({ ok: true });
-
   } catch (e) {
-    console.error('[SMS EXCEPTION]', e.message);
-    res.status(500).json({ error: 'SMS service down' });
+    console.error('[SMSAero EXCEPTION]', e.response?.data || e.message);
+    res.status(500).json({ error: 'SMS service unavailable' });
   }
 });
 
-// Проверка кода по номеру
+// Проверка кода
 app.post('/api/verify-code', (req, res) => {
   const { phone, code } = req.body;
   if (!phone || !code) {
@@ -88,6 +91,7 @@ app.post('/api/verify-code', (req, res) => {
   }
 });
 
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK' });
 });
@@ -95,4 +99,5 @@ app.get('/api/health', (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ AIST Backend running on port ${PORT}`);
+  console.log(`📡 SMS provider: SMSAero`);
 });
