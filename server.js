@@ -6,10 +6,10 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
-// Хранилище сессий (в памяти, для MVP)
+// Хранилище сессий
 const sessions = {};
 
-// CORS — разрешаем запросы с localhost (для теста)
+// CORS
 app.use((req, res, next) => {
   const allowedOrigins = [
     'http://localhost:3000',
@@ -24,74 +24,48 @@ app.use((req, res, next) => {
   next();
 });
 
-// Отправка SMS
-app.post('/api/send-sms', async (req, res) => {
-  const { phone } = req.body;
+// Отправка кода в Telegram
+app.post('/api/send-code', async (req, res) => {
+  const { telegramId } = req.body;
 
-  // Валидация номера
-  if (!phone || !/^\+?7\d{10}$/.test(phone)) {
-    return res.status(400).json({ error: 'Invalid phone format. Use +79991234567' });
+  if (!telegramId || isNaN(telegramId)) {
+    return res.status(400).json({ error: 'Invalid telegramId. Must be numeric user ID.' });
   }
 
-  // Нормализуем номер: убираем +
-  const cleanPhone = phone.startsWith('+') ? phone.slice(1) : phone;
-
-  // Генерируем код
   const code = Math.random().toString().slice(2, 8);
   const userId = uuidv4();
+  sessions[telegramId] = { code, userId };
 
-  // Сохраняем сессию
-  sessions[cleanPhone] = { code, userId };
-
-  console.log(`[SMS DEBUG] Sending code ${code} to ${cleanPhone}`);
+  console.log(`[TG DEBUG] Sending code ${code} to Telegram ID ${telegramId}`);
 
   try {
-    // Отправка через smsc.ru
-    const response = await axios.get('https://smsc.ru/sys/send.php', {
-      params: {
-        login: process.env.SMSC_LOGIN,
-        psw: process.env.SMSC_PASSWORD,
-        phones: cleanPhone,
-        mes: `AIST: ${code}`,       // Формат, одобренный для имени AIST
-        sender: 'AIST',              // Обязательно!
-        fmt: 3                       // JSON-ответ
-      },
-      timeout: 10000
+    await axios.post(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      chat_id: telegramId,
+      text: `🔐 Ваш код AIST: ${code}\n\nНикому не сообщайте его!`,
+      parse_mode: 'HTML'
     });
 
-    const data = response.data;
-    if (data.error) {
-      console.error('[SMS ERROR]', data);
-      return res.status(500).json({ error: 'SMS delivery failed', details: data.error });
-    }
-
-    console.log('[SMS SUCCESS] Message sent');
+    console.log('[TG SUCCESS] Code sent');
     res.json({ ok: true });
 
   } catch (error) {
-    console.error('[SMS EXCEPTION]', error.message);
-    res.status(500).json({ error: 'SMS service unavailable' });
+    console.error('[TG ERROR]', error.response?.data || error.message);
+    res.status(500).json({ error: 'Failed to send Telegram message' });
   }
 });
 
 // Проверка кода
 app.post('/api/verify-code', (req, res) => {
-  const { phone, code } = req.body;
-  if (!phone || !code) {
-    return res.status(400).json({ error: 'Phone and code are required' });
+  const { telegramId, code } = req.body;
+  if (!telegramId || !code) {
+    return res.status(400).json({ error: 'telegramId and code are required' });
   }
 
-  const cleanPhone = phone.startsWith('+') ? phone.slice(1) : phone;
-  const session = sessions[cleanPhone];
-
+  const session = sessions[telegramId];
   if (session && session.code === code) {
     const { userId } = session;
-    delete sessions[cleanPhone]; // одноразовый код
-
-    res.json({
-      userId,
-      token: 'dummy_jwt_for_mvp' // в продакшене — реальный JWT
-    });
+    delete sessions[telegramId];
+    res.json({ userId, token: 'dummy_jwt_for_mvp' });
   } else {
     res.status(400).json({ error: 'Invalid code' });
   }
@@ -105,5 +79,5 @@ app.get('/api/health', (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ AIST Backend running on port ${PORT}`);
-  console.log(`📡 SMS sender: AIST`);
+  console.log(`📡 Telegram bot enabled`);
 });
